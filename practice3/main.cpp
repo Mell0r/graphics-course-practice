@@ -32,16 +32,25 @@ const char vertex_shader_source[] =
 R"(#version 330 core
 
 uniform mat4 view;
+uniform float dash;
+uniform float time;
 
 layout (location = 0) in vec2 in_position;
 layout (location = 1) in vec4 in_color;
+layout (location = 2) in float distance;
 
 out vec4 color;
+out float dist;
 
 void main()
 {
     gl_Position = view * vec4(in_position, 0.0, 1.0);
     color = in_color;
+    if (dash == 1.0) {
+        dist = distance + int(time) % 40;
+    } else {
+        dist = 0.0;
+    }
 }
 )";
 
@@ -49,12 +58,18 @@ const char fragment_shader_source[] =
 R"(#version 330 core
 
 in vec4 color;
+in float dist;
 
 layout (location = 0) out vec4 out_color;
 
 void main()
 {
-    out_color = color;
+    //out_color = color;
+    if (mod(dist, 40.0) < 20.0) {
+        out_color = color;
+    } else {
+        discard;
+    }
 }
 )";
 
@@ -107,6 +122,7 @@ struct vertex
 {
     vec2 position;
     std::uint8_t color[4];
+    float distance;
 };
 
 vec2 bezier(std::vector<vertex> const & vertices, float t)
@@ -124,6 +140,51 @@ vec2 bezier(std::vector<vertex> const & vertices, float t)
         }
     }
     return points[0];
+}
+
+GLuint create_buffer() {
+    GLuint buff;
+    glGenBuffers(1, &buff);
+    glBindBuffer(GL_ARRAY_BUFFER, buff);
+    return buff;
+}
+
+GLuint create_vertex_array() {
+    GLuint vao;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    return vao;
+}
+
+void generate_bezier_vertices(int quality, std::vector<vertex>& vertices, std::vector<vertex>& vertices_bezier) {
+    vertices_bezier.clear();
+    for (float t = 0.0f; t < 1.0f + 1.0f / (vertices.size() * (float)quality * 2); t += 1.0f / (vertices.size() * (float)quality)) {
+        vec2 coord = bezier(vertices, t);
+        float distance = vertices_bezier.empty()
+                ? 0
+                : vertices_bezier.back().distance +
+                    std::hypot(
+                        vertices_bezier.back().position.x - coord.x,
+                        vertices_bezier.back().position.y - coord.y
+                    );
+        vertices_bezier.push_back(vertex {coord, {0, 0, 0, 0}, distance });
+    }
+}
+
+void update_vbo(GLuint vbo, std::vector<vertex>& vertices) {
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(vertex), vertices.data(), GL_DYNAMIC_DRAW);
+}
+
+void setupVertexAttribs() {
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(vertex), reinterpret_cast<void*>(offsetof(vertex, position)));
+
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(vertex), reinterpret_cast<void*>(offsetof(vertex, color)));
+
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, sizeof(vertex), reinterpret_cast<void*>(offsetof(vertex, distance)));
 }
 
 int main() try
@@ -168,7 +229,32 @@ int main() try
     auto fragment_shader = create_shader(GL_FRAGMENT_SHADER, fragment_shader_source);
     auto program = create_program(vertex_shader, fragment_shader);
 
+//     std::vector<vertex> vertices = {
+//                  { vec2{700.0f, 700.0f}, {255, 0, 0, 255} },
+//                  { vec2{300.0f, 500.0f}, {0, 255, 0, 255} },
+//                  { vec2{500.0f, 300.0f}, {0, 0, 255, 255} }
+//     };
+    std::vector<vertex> vertices = {};
+    std::vector<vertex> vertices_bezier = {};
+    int quality = 4;
+
+    GLuint vbo = create_buffer();
+    GLuint vao = create_vertex_array();
+    setupVertexAttribs();
+
+    GLuint vbo_bezier = create_buffer();
+    GLuint vao_bezier = create_vertex_array();
+    setupVertexAttribs();
+
+//    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(vertex), vertices.data(), GL_DYNAMIC_DRAW);
+
+//    vertex v{};
+//    glGetBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(v), &v);
+//    std::cout << "x: " << v.position.x << " y: " << v.position.y << std::endl;
+
     GLuint view_location = glGetUniformLocation(program, "view");
+    GLuint dash_location = glGetUniformLocation(program, "dash");
+    GLuint time_location = glGetUniformLocation(program, "time");
 
     auto last_frame_start = std::chrono::high_resolution_clock::now();
 
@@ -194,22 +280,35 @@ int main() try
         case SDL_MOUSEBUTTONDOWN:
             if (event.button.button == SDL_BUTTON_LEFT)
             {
-                int mouse_x = event.button.x;
-                int mouse_y = event.button.y;
+                float mouse_x = event.button.x;
+                float mouse_y = event.button.y;
+                vertices.push_back({{mouse_x, mouse_y}, {0, 0, 255, 255}, 0.0f});
+                update_vbo(vbo, vertices);
+                generate_bezier_vertices(quality, vertices, vertices_bezier);
+                update_vbo(vbo_bezier, vertices_bezier);
             }
             else if (event.button.button == SDL_BUTTON_RIGHT)
             {
-
+                if (!vertices.empty()) {
+                    vertices.pop_back();
+                }
+                update_vbo(vbo, vertices);
+                generate_bezier_vertices(quality, vertices, vertices_bezier);
+                update_vbo(vbo_bezier, vertices_bezier);
             }
             break;
         case SDL_KEYDOWN:
             if (event.key.keysym.sym == SDLK_LEFT)
             {
-
+                quality = std::max(quality - 1, 1);
+                generate_bezier_vertices(quality, vertices, vertices_bezier);
+                update_vbo(vbo_bezier, vertices_bezier);
             }
             else if (event.key.keysym.sym == SDLK_RIGHT)
             {
-
+                quality++;
+                generate_bezier_vertices(quality, vertices, vertices_bezier);
+                update_vbo(vbo_bezier, vertices_bezier);
             }
             break;
         }
@@ -224,16 +323,34 @@ int main() try
 
         glClear(GL_COLOR_BUFFER_BIT);
 
-        float view[16] =
-        {
-            1.f, 0.f, 0.f, 0.f,
-            0.f, 1.f, 0.f, 0.f,
-            0.f, 0.f, 1.f, 0.f,
-            0.f, 0.f, 0.f, 1.f,
+        float view[16] = {
+                2.f / width, 0.f, 0.f, -1.f,
+                0.f, -2.f / height, 0.f, 1.f,
+                0.f, 0.f, 1.f, 0.f,
+                0.f, 0.f, 0.f, 1.f,
         };
 
         glUseProgram(program);
+
+        float dash = 0.0f;
+
         glUniformMatrix4fv(view_location, 1, GL_TRUE, view);
+        glUniform1f(dash_location, dash);
+        glUniform1f(time_location, time * 100);
+
+        glBindVertexArray(vao);
+//        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glLineWidth(5.0f);
+        glPointSize(10);
+        glDrawArrays(GL_LINE_STRIP, 0, vertices.size());
+        glDrawArrays(GL_POINTS, 0, vertices.size());
+
+        dash = 1.0f;
+
+        glBindVertexArray(vao_bezier);
+        glLineWidth(5.0f);
+        glUniform1f(dash_location, dash);
+        glDrawArrays(GL_LINE_STRIP, 0, vertices_bezier.size());
 
         SDL_GL_SwapWindow(window);
     }
