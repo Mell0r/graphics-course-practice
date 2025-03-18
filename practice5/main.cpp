@@ -41,13 +41,16 @@ uniform mat4 projection;
 
 layout (location = 0) in vec3 in_position;
 layout (location = 1) in vec3 in_normal;
+layout (location = 2) in vec2 in_texcoord;
 
 out vec3 normal;
+out vec2 texcoord;
 
 void main()
 {
     gl_Position = projection * viewmodel * vec4(in_position, 1.0);
     normal = mat3(viewmodel) * in_normal;
+    texcoord = in_texcoord;
 }
 )";
 
@@ -55,13 +58,20 @@ const char fragment_shader_source[] =
 R"(#version 330 core
 
 in vec3 normal;
+in vec2 texcoord;
 
 layout (location = 0) out vec4 out_color;
+
+uniform sampler2D sampler;
+uniform float time;
 
 void main()
 {
     float lightness = 0.5 + 0.5 * dot(normalize(normal), normalize(vec3(1.0, 2.0, 3.0)));
-    vec3 albedo = vec3(1.0);
+//    vec3 albedo = vec3(1.0);
+//    vec3 albedo = vec3(texcoord, 0.0);
+//    vec3 albedo = vec3(texture(sampler, texcoord));
+    vec3 albedo = vec3(texture(sampler, vec2(texcoord.x + log(time), texcoord.y - sin(time))));
     out_color = vec4(lightness * albedo, 1.0);
 }
 )";
@@ -103,6 +113,56 @@ GLuint create_program(GLuint vertex_shader, GLuint fragment_shader)
     }
 
     return result;
+}
+
+
+GLuint create_buffer(int target) {
+    GLuint buff;
+    glGenBuffers(1, &buff);
+    glBindBuffer(target, buff);
+    return buff;
+}
+
+GLuint create_vertex_array() {
+    GLuint vao;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    return vao;
+}
+
+void setup_vertex_attribs() {
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(obj_data::vertex), (void*)offsetof(obj_data::vertex, position));
+    glEnableVertexAttribArray(0);
+
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(obj_data::vertex), (void*)offsetof(obj_data::vertex, normal));
+    glEnableVertexAttribArray(1);
+
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(obj_data::vertex), (void*)offsetof(obj_data::vertex, texcoord));
+    glEnableVertexAttribArray(2);
+}
+
+GLuint create_texture_on_unit(int unit_level) {
+    GLuint texture;
+    glGenTextures(1, &texture);
+    glActiveTexture(GL_TEXTURE0 + unit_level);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    return texture;
+}
+
+void initialize_texture(
+        GLuint texture,
+        unsigned int width,
+        unsigned int height,
+        void* data,
+        int mag_filter,
+        int min_filter
+) {
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+
+    glGenerateMipmap(GL_TEXTURE_2D);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, mag_filter);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, min_filter);
 }
 
 int main() try
@@ -151,10 +211,46 @@ int main() try
 
     GLuint viewmodel_location = glGetUniformLocation(program, "viewmodel");
     GLuint projection_location = glGetUniformLocation(program, "projection");
+    GLuint sampler_location = glGetUniformLocation(program, "sampler");
+    GLuint time_location = glGetUniformLocation(program, "time");
 
     std::string project_root = PROJECT_ROOT;
     std::string cow_texture_path = project_root + "/cow.png";
     obj_data cow = parse_obj(project_root + "/cow.obj");
+
+    GLuint vao = create_vertex_array();
+    GLuint vbo = create_buffer(GL_ARRAY_BUFFER);
+    GLuint ebo = create_buffer(GL_ELEMENT_ARRAY_BUFFER);
+
+    glBufferData(GL_ARRAY_BUFFER, cow.vertices.size() * sizeof(obj_data::vertex), cow.vertices.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, cow.indices.size() * sizeof(uint32_t), cow.indices.data(), GL_STATIC_DRAW);
+
+    setup_vertex_attribs();
+
+    GLuint chess_texture = create_texture_on_unit(0);
+    int size = 512;
+    std::vector<std::uint32_t> chess_pixels(size * size);
+    for (int i = 0; i < size; i++) {
+        for (int j = 0; j < size; j++) {
+            chess_pixels[i * size + j] = ((i + j) % 2 == 0 ? 0xFF000000u : 0xFFFFFFFFu);
+        }
+    }
+//    initialize_texture(chess_texture, size, size, chess_pixels.data(), GL_NEAREST, GL_NEAREST);
+    initialize_texture(chess_texture, size, size, chess_pixels.data(), GL_NEAREST, GL_NEAREST_MIPMAP_NEAREST);
+    std::vector<std::uint32_t> red(size / 2 * size / 2, 0xFF0000FFu);
+    glTexImage2D(GL_TEXTURE_2D, 1, GL_RGBA8, size / 2, size / 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, red.data());
+
+    std::vector<std::uint32_t> green(size / 4 * size / 4, 0xFF00FF00u);
+    glTexImage2D(GL_TEXTURE_2D, 2, GL_RGBA8, size / 4, size /4 , 0, GL_RGBA, GL_UNSIGNED_BYTE, green.data());
+
+    std::vector<std::uint32_t> blue(size / 8 * size / 8, 0xFFFF0000u);
+    glTexImage2D(GL_TEXTURE_2D, 3, GL_RGBA8, size / 8, size / 8, 0, GL_RGBA, GL_UNSIGNED_BYTE, blue.data());
+
+    GLuint cow_texture = create_texture_on_unit(1);
+    int cow_tex_width, cow_tex_height, n;
+    unsigned char *data = stbi_load(cow_texture_path.c_str(), &cow_tex_width, &cow_tex_height, &n, 4);
+    initialize_texture(cow_texture, cow_tex_width, cow_tex_height, data, GL_LINEAR, GL_LINEAR_MIPMAP_LINEAR);
+    stbi_image_free(data);
 
     auto last_frame_start = std::chrono::high_resolution_clock::now();
 
@@ -230,6 +326,11 @@ int main() try
         glUseProgram(program);
         glUniformMatrix4fv(viewmodel_location, 1, GL_TRUE, viewmodel);
         glUniformMatrix4fv(projection_location, 1, GL_TRUE, projection);
+        glUniform1i(sampler_location, 1);
+        glUniform1f(time_location, time);
+
+        glBindVertexArray(vao);
+        glDrawElements(GL_TRIANGLES, cow.indices.size(), GL_UNSIGNED_INT, nullptr);
 
         SDL_GL_SwapWindow(window);
     }
