@@ -70,19 +70,63 @@ const char fragment_shader_source[] =
 uniform vec3 camera_position;
 
 uniform vec3 albedo;
-
 uniform vec3 ambient_light;
+
+uniform vec3 sun_direction;
+uniform vec3 sun_color;
+
+uniform vec3 point_light_position;
+uniform vec3 point_light_color;
+uniform vec3 point_light_attenuation;
+
+uniform float glossiness;
+uniform float roughness;
 
 in vec3 position;
 in vec3 normal;
 
 layout (location = 0) out vec4 out_color;
 
+vec3 diffuse(vec3 direction) {
+    return albedo * max(0.0, dot(normal, direction));
+}
+
+vec3 specular(vec3 direction) {
+    vec3 view_direction = normalize(camera_position - position);
+    vec3 reflected = 2.0 * normal * dot(normal, normalize(direction)) - normalize(direction);
+    float power = 1.0 / (roughness * roughness) - 1.0;
+    return glossiness * albedo * pow(max(0.0, dot(reflected, view_direction)), power);
+}
+
+float attenuation(float c_0, float c_1, float c_2, float r) {
+    return 1.0 / (c_0 + c_1 * r + c_2 * r * r);
+}
+
 void main()
 {
     vec3 ambient = albedo * ambient_light;
-    vec3 color = ambient;
-    out_color = vec4(color, 1.0);
+//    out_color = vec4(ambient, 1.0);
+
+//    vec3 sun_light_color = diffuse(sun_direction) * sun_color;
+    vec3 sun_light_color = (diffuse(sun_direction) + specular(sun_direction)) * sun_color;
+//    out_color = vec4(ambient + sun_light_color, 1.0);
+
+    vec3 point_light_direction = normalize(point_light_position - position);
+//    vec3 point_light_color = diffuse(point_light_direction) * point_light_color / attenuation(
+//        point_light_attenuation.x,
+//        point_light_attenuation.y,
+//        point_light_attenuation.z,
+//        distance(position, point_light_position)
+//    );
+    vec3 point_light_color = (diffuse(point_light_direction) + specular(point_light_direction)) * point_light_color / attenuation(
+        point_light_attenuation.x,
+        point_light_attenuation.y,
+        point_light_attenuation.z,
+        distance(position, point_light_position)
+    );
+
+//    out_color = vec4(ambient + sun_light_color + point_light_color, 1.0);
+    out_color = vec4(ambient + sun_light_color + point_light_color, 0.5);
 }
 )";
 
@@ -168,6 +212,10 @@ int main() try {
     GLuint camera_position_location = glGetUniformLocation(program, "camera_position");
     GLuint albedo_location = glGetUniformLocation(program, "albedo");
     GLuint ambient_light_location = glGetUniformLocation(program, "ambient_light");
+    GLuint sun_direction_location = glGetUniformLocation(program, "sun_direction");
+    GLuint sun_color_location = glGetUniformLocation(program, "sun_color");
+    GLuint glossiness_location = glGetUniformLocation(program, "glossiness");
+    GLuint roughness_location = glGetUniformLocation(program, "roughness");
 
     std::string project_root = PROJECT_ROOT;
     std::string suzanne_model_path = project_root + "/suzanne.obj";
@@ -259,31 +307,47 @@ int main() try {
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_CULL_FACE);
 
+        if (transparent) {
+            glEnable(GL_BLEND);
+            glBlendEquation(GL_FUNC_ADD);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        } else {
+            glDisable(GL_BLEND);
+        }
+
         float near = 0.1f;
         float far = 100.f;
 
-        glm::mat4 model(1.f);
+        for (int i = 0; i < 9; i++) {
+            glm::mat4 model(1.f);
 
-        glm::mat4 view(1.f);
-        view = glm::translate(view, {0.f, 0.f, -camera_distance});
-        view = glm::rotate(view, camera_angle, {0.f, 1.f, 0.f});
-        view = glm::translate(view, {-camera_x, 0.f, 0.f});
+            glm::mat4 view(1.f);
+            view = glm::translate(view, {3.f * (i % 3 - 1), 3.f * (i / 3 - 1), -camera_distance});
+            view = glm::rotate(view, camera_angle, {0.f, 1.f, 0.f});
+            view = glm::translate(view, {-camera_x, 0.f, 0.f});
 
-        float aspect = (float)height / (float)width;
-        glm::mat4 projection = glm::perspective(glm::pi<float>() / 3.f, (width * 1.f) / height, near, far);
+            float aspect = (float) height / (float) width;
+            glm::mat4 projection = glm::perspective(glm::pi<float>() / 3.f, (width * 1.f) / height, near, far);
 
-        glm::vec3 camera_position = (glm::inverse(view) * glm::vec4(0.f, 0.f, 0.f, 1.f)).xyz();
+            glm::vec3 camera_position = (glm::inverse(view) * glm::vec4(0.f, 0.f, 0.f, 1.f)).xyz();
 
-        glUseProgram(program);
-        glUniformMatrix4fv(model_location, 1, GL_FALSE, reinterpret_cast<float *>(&model));
-        glUniformMatrix4fv(view_location, 1, GL_FALSE, reinterpret_cast<float *>(&view));
-        glUniformMatrix4fv(projection_location, 1, GL_FALSE, reinterpret_cast<float *>(&projection));
-        glUniform3fv(camera_position_location, 1, (float *) (&camera_position));
-        glUniform3f(albedo_location, 0.7f, 0.4f, 0.2f);
-        glUniform3f(ambient_light_location, 0.2f, 0.2f, 0.2f);
+            glUseProgram(program);
+            glUniformMatrix4fv(model_location, 1, GL_FALSE, reinterpret_cast<float *>(&model));
+            glUniformMatrix4fv(view_location, 1, GL_FALSE, reinterpret_cast<float *>(&view));
+            glUniformMatrix4fv(projection_location, 1, GL_FALSE, reinterpret_cast<float *>(&projection));
+            glUniform3fv(camera_position_location, 1, (float *) (&camera_position));
+            glUniform3f(albedo_location, 0.5f, 0.6f, 0.2f);
+            glUniform3f(ambient_light_location, 0.2f, 0.2f, 0.2f);
+            glUniform3f(sun_direction_location, 1.f, 0.f, 0.9f);
+            glUniform3f(sun_color_location, 1.0f, 0.9f, 0.8f);
+//            glUniform1f(glossiness_location, 5.f);
+//            glUniform1f(roughness_location, 0.1f);
+            glUniform1f(glossiness_location, 5.f + i - 4.f);
+            glUniform1f(roughness_location, 0.1f + (0.5f - 0.1f) * (i + 1) / 9);
 
-        glBindVertexArray(suzanne_vao);
-        glDrawElements(GL_TRIANGLES, suzanne.indices.size(), GL_UNSIGNED_INT, nullptr);
+            glBindVertexArray(suzanne_vao);
+            glDrawElements(GL_TRIANGLES, suzanne.indices.size(), GL_UNSIGNED_INT, nullptr);
+        }
 
         SDL_GL_SwapWindow(window);
     }
