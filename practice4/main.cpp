@@ -16,6 +16,8 @@
 
 #include "obj_parser.hpp"
 
+#define PI 3.14159265
+
 std::string to_string(std::string_view str)
 {
     return std::string(str.begin(), str.end());
@@ -119,6 +121,31 @@ GLuint create_program(GLuint vertex_shader, GLuint fragment_shader)
     return result;
 }
 
+GLuint create_buffer(int target) {
+    GLuint buff;
+    glGenBuffers(1, &buff);
+    glBindBuffer(target, buff);
+    return buff;
+}
+
+GLuint create_vertex_array() {
+    GLuint vao;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    return vao;
+}
+
+void setupVertexAttribs() {
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(obj_data::vertex), (void*)offsetof(obj_data::vertex, position));
+
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(obj_data::vertex), (void*)offsetof(obj_data::vertex, normal));
+
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(obj_data::vertex), (void*)offsetof(obj_data::vertex, texcoord));
+}
+
 int main() try
 {
     if (SDL_Init(SDL_INIT_VIDEO) != 0)
@@ -170,11 +197,28 @@ int main() try
     std::string project_root = PROJECT_ROOT;
     obj_data bunny = parse_obj(project_root + "/bunny.obj");
 
+
+    GLuint vao = create_vertex_array();
+    GLuint vbo = create_buffer(GL_ARRAY_BUFFER);
+    GLuint ebo = create_buffer(GL_ELEMENT_ARRAY_BUFFER);
+
+    glBufferData(GL_ARRAY_BUFFER, bunny.vertices.size() * sizeof(obj_data::vertex), bunny.vertices.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, bunny.indices.size() * sizeof(uint32_t), bunny.indices.data(), GL_STATIC_DRAW);
+
+    setupVertexAttribs();
+
     auto last_frame_start = std::chrono::high_resolution_clock::now();
 
     float time = 0.f;
+    float bunny_x = 0.f;
+    float bunny_y = 0.f;
+    float speed = 1.f;
 
     std::map<SDL_Keycode, bool> button_down;
+
+    glEnable(GL_DEPTH_TEST);
+//    glEnable(GL_CULL_FACE);
+//    glCullFace(GL_FRONT);
 
     bool running = true;
     while (running)
@@ -209,36 +253,98 @@ int main() try
         last_frame_start = now;
         time += dt;
 
-        glClear(GL_COLOR_BUFFER_BIT);
+        if (button_down[SDLK_LEFT]) {
+            bunny_x -= speed * dt;
+        } else if (button_down[SDLK_RIGHT]) {
+            bunny_x += speed * dt;
+        } else if (button_down[SDLK_UP]) {
+            bunny_y += speed * dt;
+        } else if (button_down[SDLK_DOWN]) {
+            bunny_y -= speed * dt;
+        }
 
-        float model[16] =
-        {
-            1.f, 0.f, 0.f, 0.f,
-            0.f, 1.f, 0.f, 0.f,
-            0.f, 0.f, 1.f, 0.f,
-            0.f, 0.f, 0.f, 1.f,
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        float near = 0.001f;
+        float far = 10.0f;
+        float top = near * tan(45.0 * PI / 180);
+        float right = top * (float)width / (float)height;
+
+//        float scale = 0.5f;
+        float scale = 1.f;
+
+//        float model[16] = {
+//                1.f, 0.f, 0.f, 0.f,
+//                0.f, 1.f, 0.f, 0.f,
+//                0.f, 0.f, 1.f, 0.f,
+//                0.f, 0.f, 0.f, 1.f,
+//        };
+//        float model[16] = {
+//                cos(time * 5) * scale, 0.f, -sin(time * 5) * scale, 0.f,
+//                0.f, scale, 0.f, 0.f,
+//                sin(time * 5) * scale, 0.f, cos(time * 5) * scale, 0.f,
+//                0.f, 0.f, 0.f, 1.f
+//        };
+        float model[16] = {
+                cos(time * 5) * scale, 0.f, -sin(time * 5) * scale, bunny_x - 1.5f,
+                0.f, scale, 0.f, bunny_y - 1.5f,
+                sin(time * 5) * scale, 0.f, cos(time * 5) * scale, 0.0f,
+                0.f, 0.f, 0.f, 1.f
+        };
+        float model2[16] = {
+                cos(time * 5) * scale, -sin(time * 5) * scale, 0.0f, bunny_x + 1.5f,
+                sin(time * 5) * scale, cos(time * 5) * scale, 0.0f, bunny_y - 1.5f,
+                0.0f, 0.0f, scale, 0.0f,
+                0.0f, 0.0f, 0.0f, 1.0
+        };
+        float model3[16] ={
+                scale, 0.f, 0.0f, bunny_x + 1.5f,
+                0.f, cos(time * 5) * scale, -sin(time * 5) * scale, bunny_y + 1.5f,
+                0.f, sin(time * 5) * scale, cos(time * 5) * scale, 0.0f,
+                0.f, 0.f, 0.f, 1.f
         };
 
-        float view[16] =
-        {
-            1.f, 0.f, 0.f, 0.f,
-            0.f, 1.f, 0.f, 0.f,
-            0.f, 0.f, 1.f, 0.f,
-            0.f, 0.f, 0.f, 1.f,
+//        float view[16] = {
+//                1.f, 0.f, 0.f, 0.f,
+//                0.f, 1.f, 0.f, 0.f,
+//                0.f, 0.f, 1.f, 0.f,
+//                0.f, 0.f, 0.f, 1.f,
+//        };
+        float view[16] = {
+                1.f, 0.f, 0.f, 0.f,
+                0.f, 1.f, 0.f, 0.f,
+                0.f, 0.f, 1.f, -3.f,
+                0.f, 0.f, 0.f, 1.f,
         };
 
-        float projection[16] =
-        {
-            1.f, 0.f, 0.f, 0.f,
-            0.f, 1.f, 0.f, 0.f,
-            0.f, 0.f, 1.f, 0.f,
-            0.f, 0.f, 0.f, 1.f,
+//        float projection[16] = {
+//                1.f, 0.f, 0.f, 0.f,
+//                0.f, 1.f, 0.f, 0.f,
+//                0.f, 0.f, 1.f, 0.f,
+//                0.f, 0.f, 0.f, 1.f,
+//        };
+        float projection[16] ={
+                near/right, 0.f, 0.f, 0.f,
+                0.f, near/top, 0.f, 0.f,
+                0.f, 0.f, -(far+near)/(far-near), -2*far*near/(far-near),
+                0.f, 0.f, -1.f, 0.f
         };
 
         glUseProgram(program);
-        glUniformMatrix4fv(model_location, 1, GL_TRUE, model);
+        glBindVertexArray(vao);
         glUniformMatrix4fv(view_location, 1, GL_TRUE, view);
         glUniformMatrix4fv(projection_location, 1, GL_TRUE, projection);
+
+        glUniformMatrix4fv(model_location, 1, GL_TRUE, model);
+        glDrawElements(GL_TRIANGLES, bunny.indices.size(), GL_UNSIGNED_INT, nullptr);
+
+
+        glUniformMatrix4fv(model_location, 1, GL_TRUE, model2);
+        glDrawElements(GL_TRIANGLES, bunny.indices.size(), GL_UNSIGNED_INT, nullptr);
+
+
+        glUniformMatrix4fv(model_location, 1, GL_TRUE, model3);
+        glDrawElements(GL_TRIANGLES, bunny.indices.size(), GL_UNSIGNED_INT, nullptr);
 
         SDL_GL_SwapWindow(window);
     }
