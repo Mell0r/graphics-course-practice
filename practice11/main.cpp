@@ -48,10 +48,17 @@ const char vertex_shader_source[] =
 R"(#version 330 core
 
 layout (location = 0) in vec3 in_position;
+layout (location = 1) in float in_size;
+layout (location = 2) in float in_rotation;
+
+out float size;
+out float rotation;
 
 void main()
 {
     gl_Position = vec4(in_position, 1.0);
+    size = in_size;
+    rotation = in_rotation;
 }
 )";
 
@@ -64,13 +71,37 @@ uniform mat4 projection;
 uniform vec3 camera_position;
 
 layout (points) in;
-layout (points, max_vertices = 1) out;
+//layout (points, max_vertices = 1) out;
+layout (triangle_strip, max_vertices = 4) out;
+
+in float size[];
+in float rotation[];
+
+out vec2 texcoord;
 
 void main()
 {
     vec3 center = gl_in[0].gl_Position.xyz;
-    gl_Position = projection * view * model * vec4(center, 1.0);
-    EmitVertex();
+    float sz = size[0];
+    float phi = rotation[0];
+
+    vec3 shift[4] = vec3[4](vec3(-sz, -sz, 0), vec3(-sz, sz, 0), vec3(sz, -sz, 0), vec3(sz, sz, 0));
+
+    for (int i = 0; i < 4; i++) {
+        vec3 z = normalize(center - camera_position);
+
+        vec3 x = normalize(cross(z, vec3(0.0, 1.0, 0.0)));
+        vec3 y = cross(x, z);
+        x = normalize(x * cos(phi) + y * sin(phi));
+        y = cross(x, z);
+
+        vec3 shift_in_plane = x * shift[i].x + y * shift[i].y + z * shift[i].z;
+
+        gl_Position = projection * view * model * vec4(center + shift_in_plane, 1.0);
+        texcoord = (shift[i].xy + vec2(sz, sz)) / 2.0 / sz;
+        EmitVertex();
+    }
+
     EndPrimitive();
 }
 
@@ -81,9 +112,17 @@ R"(#version 330 core
 
 layout (location = 0) out vec4 out_color;
 
+uniform sampler2D particle_texture;
+uniform sampler1D color_texture;
+
+in vec2 texcoord;
+
 void main()
 {
-    out_color = vec4(1.0, 0.0, 0.0, 1.0);
+    out_color = vec4(
+        texture(color_texture, texture(particle_texture, texcoord).r).rgb,
+        texture(particle_texture, texcoord).r
+    );
 }
 )";
 
@@ -126,9 +165,27 @@ GLuint create_program(Shaders ... shaders)
     return result;
 }
 
+std::random_device rd;
+std::mt19937 seed(rd());
+
+std::uniform_real_distribution<float> position_generator(-0.05f, 0.05f);
+std::uniform_real_distribution<float> size_generator(0.2f, 0.4f);
+std::uniform_real_distribution<float> velocity_generator(-0.2f, 0.2f);
+std::uniform_real_distribution<float> angular_velocity_generator(-M_PI, M_PI);
 struct particle
 {
     glm::vec3 position;
+    float size;
+    glm::vec3 velocity;
+    float rotation;
+    float angular_velocity;
+
+    particle() {
+        position = glm::vec3(position_generator(seed), position_generator(seed), position_generator(seed));
+        size = 0.3f * size_generator(seed);
+        velocity = glm::vec3(velocity_generator(seed), 0.5f + velocity_generator(seed), velocity_generator(seed));
+        angular_velocity = angular_velocity_generator(seed);
+    }
 };
 
 int main() try
@@ -178,16 +235,10 @@ int main() try
     GLuint view_location = glGetUniformLocation(program, "view");
     GLuint projection_location = glGetUniformLocation(program, "projection");
     GLuint camera_position_location = glGetUniformLocation(program, "camera_position");
+    GLuint particle_texture_location = glGetUniformLocation(program, "particle_texture");
+    GLuint color_texture_location = glGetUniformLocation(program, "color_texture");
 
-    std::default_random_engine rng;
-
-    std::vector<particle> particles(256);
-    for (auto & p : particles)
-    {
-        p.position.x = std::uniform_real_distribution<float>{-1.f, 1.f}(rng);
-        p.position.y = 0.f;
-        p.position.z = std::uniform_real_distribution<float>{-1.f, 1.f}(rng);
-    }
+    std::vector<particle> particles;
 
     GLuint vao, vbo;
     glGenVertexArrays(1, &vao);
@@ -198,9 +249,42 @@ int main() try
 
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(particle), (void*)(0));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, sizeof(particle), (void*)offsetof(particle, size));
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, sizeof(particle), (void*)offsetof(particle, rotation));
 
     const std::string project_root = PROJECT_ROOT;
     const std::string particle_texture_path = project_root + "/particle.png";
+
+    int texture_width, texture_height, n;
+    auto pixels = stbi_load(particle_texture_path.c_str(), &texture_width, &texture_height, &n, 4);
+    GLuint particle_texture;
+    glGenTextures(1, &particle_texture);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, particle_texture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, texture_width, texture_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    stbi_image_free(pixels);
+
+    GLuint colors_texture;
+    glGenTextures(1, &colors_texture);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_1D, colors_texture);
+    glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    std::vector<glm::vec4> colors = {
+            {0.f, 0.8f, 0.8f, 1.f},
+            {0.f, 1.f, 1.f, 1.f},
+            {0.2f, 1.f, 1.f, 1.f},
+            {0.4f, 1.f, 1.f, 1.f},
+            {0.6f, 1.f, 1.f, 1.f},
+            {0.8f, 1.f, 1.f, 1.f},
+    };
+    glTexImage1D(GL_TEXTURE_1D, 0, GL_RGBA8, colors.size(), 0, GL_RGBA, GL_FLOAT, colors.data());
 
     glPointSize(5.f);
 
@@ -263,8 +347,29 @@ int main() try
         if (button_down[SDLK_RIGHT])
             camera_rotation += 3.f * dt;
 
+        const float A = 0.1;
+        const float C = 0.1;
+        const float D = 0.3;
+        if (!paused) {
+            if (particles.size() < 256)
+                particles.emplace_back();
+
+            for (auto& particle: particles) {
+                particle.velocity.y += dt * A;
+                particle.position += particle.velocity * dt;
+                particle.velocity *= exp(- C * dt);
+                particle.size *= exp(- D * dt);
+
+                particle.rotation += dt * particle.angular_velocity;
+
+                if (particle.position.y >= 1.6 || particle.size < 0.02)
+                    particle = {};
+            }
+        }
+
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        glEnable(GL_DEPTH_TEST);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
 
         float near = 0.1f;
         float far = 100.f;
@@ -289,6 +394,8 @@ int main() try
         glUniformMatrix4fv(view_location, 1, GL_FALSE, reinterpret_cast<float *>(&view));
         glUniformMatrix4fv(projection_location, 1, GL_FALSE, reinterpret_cast<float *>(&projection));
         glUniform3fv(camera_position_location, 1, reinterpret_cast<float *>(&camera_position));
+        glUniform1i(particle_texture_location, 0);
+        glUniform1i(color_texture_location, 1);
 
         glBindVertexArray(vao);
         glDrawArrays(GL_POINTS, 0, particles.size());
