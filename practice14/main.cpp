@@ -56,13 +56,14 @@ uniform mat4 projection;
 layout (location = 0) in vec3 in_position;
 layout (location = 1) in vec3 in_normal;
 layout (location = 2) in vec2 in_texcoord;
+layout (location = 3) in vec3 in_instance;
 
 out vec3 normal;
 out vec2 texcoord;
 
 void main()
 {
-    gl_Position = projection * view * model * vec4(in_position, 1.0);
+    gl_Position = projection * view * model * vec4(in_position + in_instance, 1.0);
     normal = mat3(model) * in_normal;
     texcoord = in_texcoord;
 }
@@ -140,7 +141,7 @@ int main() try
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
-    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 16);
+//    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 16);
     SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
@@ -190,6 +191,14 @@ int main() try
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
     glBufferData(GL_ARRAY_BUFFER, input_model.buffer.size(), input_model.buffer.data(), GL_STATIC_DRAW);
 
+    std::vector<glm::vec3> offsets;
+    for (int i = -16; i < 16; i++)
+        for (int j = -16; j < 16; j++)
+            offsets.emplace_back(i, 0.f, j);
+
+    GLuint instance_vbo;
+    glGenBuffers(1, &instance_vbo);
+
     std::vector<GLuint> vaos;
     for (int i = 0; i < input_model.meshes.size(); ++i)
     {
@@ -209,6 +218,11 @@ int main() try
         setup_attribute(0, input_model.meshes[i].position);
         setup_attribute(1, input_model.meshes[i].normal);
         setup_attribute(2, input_model.meshes[i].texcoord);
+
+        glBindBuffer(GL_ARRAY_BUFFER, instance_vbo);
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+        glVertexAttribDivisor(3, 1);
 
         vaos.push_back(vao);
     }
@@ -241,6 +255,9 @@ int main() try
 
     glm::vec3 camera_position{0.f, 1.5f, 3.f};
     float camera_rotation = 0.f;
+
+    std::vector<GLuint> query_object_ids;
+    std::vector<bool> object_used;
 
     bool paused = false;
 
@@ -303,6 +320,17 @@ int main() try
         if (button_down[SDLK_UP])
             camera_position.y += 3.f * dt;
 
+        GLuint free_query_object_index = 0;
+        while (free_query_object_index < query_object_ids.size() && object_used[free_query_object_index])
+            free_query_object_index++;
+        if (free_query_object_index == query_object_ids.size()) {
+            query_object_ids.emplace_back();
+            object_used.push_back(false);
+            glGenQueries(1, &query_object_ids[query_object_ids.size() - 1]);
+        }
+        object_used[free_query_object_index] = true;
+        glBeginQuery(GL_TIME_ELAPSED, query_object_ids[free_query_object_index]);
+
         camera_position += camera_move_forward * glm::vec3(-std::sin(camera_rotation), 0.f, std::cos(camera_rotation));
         camera_position += camera_move_sideways * glm::vec3(std::cos(camera_rotation), 0.f, std::sin(camera_rotation));
 
@@ -328,6 +356,15 @@ int main() try
 
         glm::vec3 light_direction = glm::normalize(glm::vec3(1.f, 2.f, 3.f));
 
+        std::vector<glm::vec3> instances[6];
+        frustum frustum(projection * view);
+        for (auto& offset : offsets) {
+            aabb box = aabb(input_model.meshes[0].min + offset, input_model.meshes[0].max + offset);
+            int lod = std::min(5, (int)std::round(glm::distance(offset, camera_position) / 5));
+            if (intersect(box, frustum))
+                instances[lod].push_back(offset);
+        }
+
         glUseProgram(program);
         glUniformMatrix4fv(model_location, 1, GL_FALSE, reinterpret_cast<float *>(&model));
         glUniformMatrix4fv(view_location, 1, GL_FALSE, reinterpret_cast<float *>(&view));
@@ -336,17 +373,40 @@ int main() try
 
         glBindTexture(GL_TEXTURE_2D, texture);
 
-        {
-            auto const & mesh = input_model.meshes[0];
-            glBindVertexArray(vaos[0]);
-            glDrawElements(GL_TRIANGLES, mesh.indices.count, mesh.indices.type, reinterpret_cast<void *>(mesh.indices.view.offset));
+        for (int i = 0; i < 6; i++) {
+            auto const & mesh = input_model.meshes[i];
+            glBindVertexArray(vaos[i]);
+            glBindBuffer(GL_ARRAY_BUFFER, instance_vbo);
+            glBufferData(GL_ARRAY_BUFFER, instances[i].size() * sizeof(glm::vec3), instances[i].data(), GL_STATIC_DRAW);
+            glDrawElementsInstanced(GL_TRIANGLES, mesh.indices.count, mesh.indices.type, reinterpret_cast<void *>(mesh.indices.view.offset), instances[i].size());
         }
 
+        glEndQuery(GL_TIME_ELAPSED);
         SDL_GL_SwapWindow(window);
+
+        for (int i = 0; i < query_object_ids.size(); i++) {
+            if (!object_used[i])
+                continue;
+
+            GLint query_finished;
+            glGetQueryObjectiv(i, GL_QUERY_RESULT_AVAILABLE, &query_finished);
+            if (query_finished == GL_FALSE)
+                continue;
+
+
+            GLint time_passed;
+            glGetQueryObjectiv(i, GL_QUERY_RESULT, &time_passed);
+            std::cout << "query " << query_object_ids[i] << " finished: "
+                << time_passed / 1e6f << " ms passed" << std::endl;
+
+            object_used[i] = false;
+        }
     }
 
     SDL_GL_DeleteContext(gl_context);
     SDL_DestroyWindow(window);
+
+    std::cout << "query size: " << query_object_ids.size() << std::endl;
 }
 catch (std::exception const & e)
 {
