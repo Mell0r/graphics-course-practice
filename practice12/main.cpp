@@ -72,6 +72,7 @@ uniform vec3 camera_position;
 uniform vec3 light_direction;
 uniform vec3 bbox_min;
 uniform vec3 bbox_max;
+uniform sampler3D cloud_texture;
 
 layout (location = 0) out vec4 out_color;
 
@@ -107,13 +108,116 @@ vec2 intersect_bbox(vec3 origin, vec3 direction)
     return vec2(vmax(tmin), vmin(tmax));
 }
 
+float get_texture_value(vec3 coord) {
+    vec3 texture_coord = (coord - bbox_min) / (bbox_max - bbox_min);
+    return texture(cloud_texture, texture_coord).r;
+}
+
 const float PI = 3.1415926535;
 
 in vec3 position;
 
 void main()
 {
-    out_color = vec4(1.0, 0.5, 0.5, 1.0);
+    vec3 direction = normalize(position - camera_position);
+    vec2 t = intersect_bbox(camera_position, direction);
+    float tmin = max(t.x, 0.0);
+    float tmax = t.y;
+
+//    float absorption = 0.0;
+//    float optical_depth = (tmax - tmin) * absorption;
+
+//    float optical_depth = 0.0;
+//    const int N = 64;
+//    float dt = (tmax - tmin) / N;
+//    for (int i = 0; i < N; i++) {
+//        float t = tmin + (i + 0.5) * dt;
+//        vec3 p = camera_position + t * direction;
+//        optical_depth += absorption * get_texture_value(p) * dt;
+//    }
+
+//    float scattering = 4.0;
+//    float extinction = scattering + absorption;
+//    vec3 light_color = vec3(16.0);
+//    vec3 color = vec3(0.0);
+//    const int N = 64;
+//    float dt = (tmax - tmin) / N;
+//    float optical_depth = 0.0;
+//
+//    const vec3 ambient_light = 4.0 * vec3(0.6, 0.8, 1.0);
+//
+//    for (int i = 0; i < N; i++) {
+//        float t = tmin + (i + 0.5) * dt;
+//        vec3 p = camera_position + t * direction;
+//        optical_depth += extinction * get_texture_value(p) * dt;
+//
+//        vec2 light_intersection = intersect_bbox(p, light_direction);
+//        float smin = max(light_intersection.x, 0.0);
+//        float smax = light_intersection.y;
+//
+//        float light_optical_depth = 0.0;
+//        const int M = 16;
+//        float ds = (smax - smin) / M;
+//        for (int j = 0; j < M; j++) {
+//            float s = smin + (j + 0.5) * ds;
+//            vec3 q = p + s * light_direction;
+//
+//            light_optical_depth += extinction * get_texture_value(q) * ds;
+//        }
+//
+//        color += (light_color * exp(-light_optical_depth) + ambient_light)
+//                * exp(-optical_depth) * dt
+//                * get_texture_value(p) * scattering / 4.0 / PI;
+//    }
+
+    vec3 absorption = vec3(0.0);
+    vec3 scattering = vec3(8.0, 6.0, 1.0);
+    vec3 extinction = scattering + absorption;
+    vec3 light_color = vec3(16.0);
+    vec3 color = vec3(0.0);
+    const int N = 64;
+    float dt = (tmax - tmin) / N;
+    vec3 optical_depth = vec3(0.0);
+
+    const vec3 ambient_light = 4.0 * vec3(0.6, 0.8, 1.0);
+
+    for (int i = 0; i < N; i++) {
+        float t = tmin + (i + 0.5) * dt;
+        vec3 p = camera_position + t * direction;
+        optical_depth += extinction * get_texture_value(p) * dt;
+
+        vec2 light_intersection = intersect_bbox(p, light_direction);
+        float smin = max(light_intersection.x, 0.0);
+        float smax = light_intersection.y;
+
+        vec3 light_optical_depth = vec3(0.0);
+        const int M = 16;
+        float ds = (smax - smin) / M;
+        for (int j = 0; j < M; j++) {
+            float s = smin + (j + 0.5) * ds;
+            vec3 q = p + s * light_direction;
+
+            light_optical_depth += extinction * get_texture_value(q) * ds;
+        }
+
+        color += (light_color * exp(-light_optical_depth) + ambient_light)
+                * exp(-optical_depth) * dt
+                * get_texture_value(p) * scattering / 4.0 / PI;
+    }
+
+    float opacity = 1.0 - exp(-optical_depth.x);
+
+//    out_color = vec4(1.0, 0.5, 0.5, 1.0);
+//    out_color = vec4(vec3((tmax - tmin) / 4), 1.0);
+//    out_color = vec4(0.4, 0.2, 0.0, opacity);
+
+//    vec3 p = camera_position + direction * (tmin + tmax) / 2.0;
+//    out_color = vec4(vec3(get_texture_value(p)), 1.0);
+
+//    out_color = vec4(color, opacity);
+
+    color = mix(vec3(0.6, 0.8, 1.0), color, opacity);
+    out_color = vec4(color, opacity);
 }
 )";
 
@@ -236,6 +340,7 @@ int main() try
     GLuint bbox_max_location = glGetUniformLocation(program, "bbox_max");
     GLuint camera_position_location = glGetUniformLocation(program, "camera_position");
     GLuint light_direction_location = glGetUniformLocation(program, "light_direction");
+    GLuint cloud_texture_location = glGetUniformLocation(program, "cloud_texture");
 
     GLuint vao, vbo, ebo;
     glGenVertexArrays(1, &vao);
@@ -256,6 +361,33 @@ int main() try
     const std::string cloud_data_path = project_root + "/disney_cloud.data";
 
     const glm::ivec3 cloud_texture_size { 126, 86, 154 };
+
+    std::vector<char> pixels(cloud_texture_size.x * cloud_texture_size.y * cloud_texture_size.y);
+    std::ifstream input(cloud_data_path, std::ios::binary);
+    input.read(pixels.data(), pixels.size());
+
+    GLuint cloud_texture;
+    glGenTextures(1, &cloud_texture);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_3D, cloud_texture);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage3D(
+        GL_TEXTURE_3D,
+        0,
+        GL_R8,
+        cloud_texture_size.x,
+        cloud_texture_size.y,
+        cloud_texture_size.z,
+        0,
+        GL_RED,
+        GL_UNSIGNED_BYTE,
+        pixels.data()
+    );
 
     const glm::vec3 cloud_bbox_max = glm::vec3(cloud_texture_size) / 100.f;
     const glm::vec3 cloud_bbox_min = - cloud_bbox_max;
@@ -359,6 +491,7 @@ int main() try
         glUniform3fv(bbox_max_location, 1, reinterpret_cast<const float *>(&cloud_bbox_max));
         glUniform3fv(camera_position_location, 1, reinterpret_cast<float *>(&camera_position));
         glUniform3fv(light_direction_location, 1, reinterpret_cast<float *>(&light_direction));
+        glUniform1i(cloud_texture_location, 0);
 
         glBindVertexArray(vao);
         glDrawElements(GL_TRIANGLES, std::size(cube_indices), GL_UNSIGNED_INT, nullptr);
