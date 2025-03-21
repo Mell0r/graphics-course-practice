@@ -46,11 +46,17 @@ void glew_fail(std::string_view message, GLenum error)
 const char msdf_vertex_shader_source[] =
 R"(#version 330 core
 
+layout (location = 0) in vec2 position;
+layout (location = 1) in vec2 in_texcoord;
+
 uniform mat4 transform;
+
+out vec2 texcoord;
 
 void main()
 {
-    gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+    gl_Position = transform * vec4(position, 0.0, 1.0);
+    texcoord = in_texcoord;
 }
 )";
 
@@ -59,9 +65,22 @@ R"(#version 330 core
 
 layout (location = 0) out vec4 out_color;
 
+uniform sampler2D sdf_texture;
+uniform float sdf_scale;
+
+in vec2 texcoord;
+
+float median(vec3 v) {
+    return max(min(v.r, v.g), min(max(v.r, v.g), v.b));
+}
+
 void main()
 {
-    out_color = vec4(0.0);
+    float sdf_value = sdf_scale * (median(texture(sdf_texture, texcoord).rgb) - 0.5);
+    float smooth_constant = length(vec2(dFdx(sdf_value), dFdy(sdf_value))) / sqrt(2.0);
+    float alpha = smoothstep(-smooth_constant, smooth_constant, sdf_value);
+    vec3 color = sdf_value < 0.4 ? vec3(1.0) : vec3(0.0);
+    out_color = vec4(color, alpha);
 }
 )";
 
@@ -104,6 +123,13 @@ GLuint create_program(Shaders ... shaders)
     return result;
 }
 
+struct vertex {
+    glm::vec2 position;
+    glm::vec2 texcoord;
+
+    vertex(glm::vec2 position, glm::vec2 texcoord) : position(position), texcoord(texcoord) {}
+};
+
 int main() try
 {
     if (SDL_Init(SDL_INIT_VIDEO) != 0)
@@ -145,11 +171,31 @@ int main() try
     auto msdf_program = create_program(msdf_vertex_shader, msdf_fragment_shader);
 
     GLuint transform_location = glGetUniformLocation(msdf_program, "transform");
+    GLuint scale_location = glGetUniformLocation(msdf_program, "sdf_scale");
 
     const std::string project_root = PROJECT_ROOT;
     const std::string font_path = project_root + "/font/font-msdf.json";
 
     auto const font = load_msdf_font(font_path);
+
+    std::vector<vertex> vertices;
+    vertices.push_back(vertex({0, 0}, {0, 0}));
+    vertices.push_back(vertex({100, 0}, {1, 0}));
+    vertices.push_back(vertex({0, 100}, {0, 1}));
+
+    GLuint vao;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+
+    GLuint vbo;
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+//    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(vertices[0]), vertices.data(), GL_STATIC_DRAW);
+
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(vertex), (void *) offsetof(vertex, position));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(vertex), (void *) offsetof(vertex, texcoord));
 
     GLuint texture;
     int texture_width, texture_height;
@@ -180,6 +226,7 @@ int main() try
     bool text_changed = true;
 
     bool running = true;
+    glm::vec2 bbox(0.f);
     while (running)
     {
         for (SDL_Event event; SDL_PollEvent(&event);) switch (event.type)
@@ -219,6 +266,51 @@ int main() try
         float dt = std::chrono::duration_cast<std::chrono::duration<float>>(now - last_frame_start).count();
         last_frame_start = now;
 
+        if (text_changed) {
+            vertices.clear();
+            glm::vec2 pen(0.f);
+            for (char c: text) {
+                auto glyph = font.glyphs.at(c);
+
+                glm::vec2 texture_size = {texture_width, texture_height};
+
+                auto vertex_1 = vertex(
+                        {glyph.xoffset + pen.x, glyph.yoffset + pen.y},
+                        glm::vec2{glyph.x, glyph.y} / texture_size
+                );
+                auto vertex_2 = vertex(
+                        {glyph.xoffset + pen.x, glyph.yoffset + glyph.height + pen.y},
+                        glm::vec2{glyph.x, glyph.y + glyph.height} / texture_size
+                );
+                auto vertex_3 = vertex(
+                        {glyph.xoffset + glyph.width + pen.x, glyph.yoffset + pen.y},
+                        glm::vec2{glyph.x + glyph.width, glyph.y} / texture_size
+                );
+                auto vertex_4 = vertex(
+                        {glyph.xoffset + glyph.width + pen.x, glyph.yoffset + glyph.height + pen.y},
+                        glm::vec2{glyph.x + glyph.width, glyph.y + glyph.height} / texture_size
+                );
+
+                vertices.push_back(vertex_1);
+                vertices.push_back(vertex_2);
+                vertices.push_back(vertex_3);
+
+                vertices.push_back(vertex_3);
+                vertices.push_back(vertex_2);
+                vertices.push_back(vertex_4);
+
+                pen.x += glyph.advance;
+
+
+                bbox.x = -pen.x / 2;
+                for (auto& v : vertices)
+                    bbox.y = fmin(bbox.y, -(float)v.position.y / 2.0);
+            }
+            glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(vertices[0]), vertices.data(), GL_STATIC_DRAW);
+
+            text_changed = false;
+        }
+
         glClearColor(0.8f, 0.8f, 1.f, 0.f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -227,6 +319,18 @@ int main() try
 
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, texture);
+
+        glm::mat4 transform(1.f);
+        transform = glm::scale(transform, glm::vec3({2.f / width, -2.f / height, 0.f}));
+        transform = glm::scale(transform, glm::vec3(5.f));
+        transform = glm::translate(transform, glm::vec3(bbox, 0.f));
+
+        glUseProgram(msdf_program);
+        glUniformMatrix4fv(transform_location, 1, GL_FALSE, reinterpret_cast<float *>(&transform));
+        glUniform1f(scale_location, font.sdf_scale);
+        glBindVertexArray(vao);
+
+        glDrawArrays(GL_TRIANGLES, 0, vertices.size());
 
         SDL_GL_SwapWindow(window);
     }
