@@ -389,13 +389,13 @@ int main() try
                 continue;
 
             GLint query_finished;
-            glGetQueryObjectiv(i, GL_QUERY_RESULT_AVAILABLE, &query_finished);
+            glGetQueryObjectiv(query_object_ids[i], GL_QUERY_RESULT_AVAILABLE, &query_finished);
             if (query_finished == GL_FALSE)
                 continue;
 
 
             GLint time_passed;
-            glGetQueryObjectiv(i, GL_QUERY_RESULT, &time_passed);
+            glGetQueryObjectiv(query_object_ids[i], GL_QUERY_RESULT, &time_passed);
             std::cout << "query " << query_object_ids[i] << " finished: "
                 << time_passed / 1e6f << " ms passed" << std::endl;
 
