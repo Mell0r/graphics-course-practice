@@ -158,6 +158,9 @@ GLuint create_vertex_array() {
 
 void generate_bezier_vertices(int quality, std::vector<vertex>& vertices, std::vector<vertex>& vertices_bezier) {
     vertices_bezier.clear();
+    if (vertices.empty())
+        return;
+
     for (float t = 0.0f; t < 1.0f + 1.0f / (vertices.size() * (float)quality * 2); t += 1.0f / (vertices.size() * (float)quality)) {
         vec2 coord = bezier(vertices, t);
         float distance = vertices_bezier.empty()
