@@ -253,9 +253,9 @@ void add_isoline(
 
             int grid_inds[4] = {
                 ind,
-                ind + 1,
                 ind + grid.width + 1,
-                ind + grid.width + 2
+                ind + grid.width + 2,
+                ind + 1
             };
 
             float grid_cells_values[4] = {
@@ -266,9 +266,6 @@ void add_isoline(
             };
 
             std::vector<std::pair<int, int>> needs_interpolation;
-            float mean =
-                    (grid_cells_values[0] + grid_cells_values[1] + grid_cells_values[2] + grid_cells_values[3]) / 4;
-
             int positive = 0;
             for (float val : grid_cells_values)
                 positive += val > 0;
@@ -292,15 +289,10 @@ void add_isoline(
                     } else if (grid_cells_values[0] * grid_cells_values[3] > 0) {
                         needs_interpolation.emplace_back(0, 1);
                         needs_interpolation.emplace_back(2, 3);
-                    } else if (grid_cells_values[0] * mean > 0) {
-                        needs_interpolation.emplace_back(0, 1);
-                        needs_interpolation.emplace_back(1, 2);
-                        needs_interpolation.emplace_back(0, 3);
-                        needs_interpolation.emplace_back(2, 3);
                     } else {
                         needs_interpolation.emplace_back(0, 1);
-                        needs_interpolation.emplace_back(0, 3);
                         needs_interpolation.emplace_back(1, 2);
+                        needs_interpolation.emplace_back(0, 3);
                         needs_interpolation.emplace_back(2, 3);
                     }
                     break;
@@ -308,7 +300,6 @@ void add_isoline(
                 case 4:
                 case 0:
                 default:
-                    continue;
                     break;
             }
 
@@ -477,17 +468,27 @@ int main() try {
         else if (button_down[SDLK_LEFT])
             isolines_count = std::max(0, isolines_count - 1);
         else if (button_down[SDLK_UP]) {
-            W = std::min(800, W + 100);
-            H = std::min(600, H + 75);
+            W = std::min(800, W + 20);
+            H = std::min(600, H + 15);
             current_grid = grid(W, H);
             glBindBuffer(GL_ARRAY_BUFFER, grid_positions_vbo);
-            glBufferData(GL_ARRAY_BUFFER, current_grid.positions.size() * sizeof(current_grid.positions[0]), current_grid.positions.data(), GL_STATIC_DRAW);
+            glBufferData(
+                GL_ARRAY_BUFFER,
+                current_grid.positions.size() * sizeof(current_grid.positions[0]),
+                current_grid.positions.data(),
+                GL_STATIC_DRAW
+            );
         } else if (button_down[SDLK_DOWN]) {
-            W = std::max(100, W - 100);
-            H = std::max(75, W - 75);
+            W = std::max(20, W - 20);
+            H = std::max(15, W - 15);
             current_grid = grid(W, H);
             glBindBuffer(GL_ARRAY_BUFFER, grid_positions_vbo);
-            glBufferData(GL_ARRAY_BUFFER, current_grid.positions.size() * sizeof(current_grid.positions[0]), current_grid.positions.data(), GL_STATIC_DRAW);
+            glBufferData(
+                GL_ARRAY_BUFFER,
+                current_grid.positions.size() * sizeof(current_grid.positions[0]),
+                current_grid.positions.data(),
+                GL_STATIC_DRAW
+            );
         }
 
         float x_scale = (width > height) ? (float(height) / float(width)) : 1.f;
