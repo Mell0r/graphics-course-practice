@@ -79,7 +79,7 @@ void main()
     float sdf_value = sdf_scale * (median(texture(sdf_texture, texcoord).rgb) - 0.5);
     float smooth_constant = length(vec2(dFdx(sdf_value), dFdy(sdf_value))) / sqrt(2.0);
     float alpha = smoothstep(-smooth_constant, smooth_constant, sdf_value);
-    vec3 color = sdf_value < 0.4 ? vec3(1.0) : vec3(0.0);
+    vec3 color = mix(vec3(1.0), vec3(0.0), smoothstep(0.3, 0.5, sdf_value));
     out_color = vec4(color, alpha);
 }
 )";
