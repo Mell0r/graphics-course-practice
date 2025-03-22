@@ -34,7 +34,7 @@ void glew_fail(std::string_view message, GLenum error) {
 }
 
 const char vertex_shader_source[] =
-        R"(#version 330 core
+R"(#version 330 core
 
 layout (location = 0) in vec2 in_position;
 layout (location = 1) in vec3 in_color;
@@ -50,7 +50,7 @@ void main() {
 )";
 
 const char fragment_shader_source[] =
-        R"(#version 330 core
+R"(#version 330 core
 
 in vec4 color;
 
@@ -105,8 +105,6 @@ struct metaball {
 };
 
 struct metaball_function {
-    float threshold = 0.005f;
-    float movement_scale = 0.5f;
     std::vector<metaball> metaballs = {
             {{1.f,   -0.3f}, {0.f,   0.5f},  1.2f,  1.2f},
             {{0.6f,  -0.4f}, {-0.5f, -0.7f}, -1.3f, 0.9f},
@@ -160,10 +158,12 @@ struct metaball_function {
 };
 
 struct grid {
+    int width;
+    int height;
     vector<glm::vec2> positions;
     vector<int> indices;
 
-    grid (int width, int height) {
+    grid (int width, int height) : width(width), height(height) {
         positions = {};
         for (int i = 0; i <= height; i++) {
             for (int j = 0; j <= width; j++) {
@@ -189,7 +189,14 @@ struct grid {
     }
 };
 
-vector<glm::vec3> calculate_colors(grid& grid, metaball_function& function) {
+struct function_values {
+    vector<float> values;
+    vector<glm::vec3> colors;
+    float min_value = 1e9;
+    float max_value = -1e9;
+};
+
+function_values calculate_function(grid& grid, metaball_function& function) {
     vector<float> values;
     float min_value = 1e9;
     float max_value = -1e9;
@@ -203,81 +210,98 @@ vector<glm::vec3> calculate_colors(grid& grid, metaball_function& function) {
     for (auto value : values)
         colors.push_back(function.value_to_color(value, min_value, max_value));
 
-    return colors;
+    return {
+        values,
+        colors,
+        min_value,
+        max_value
+    };
 }
 
-vertex interpolate_coords(int first_index, int second_index, float value) {
-    vertex vertex1 = grid_vertices[first_index];
-    vertex vertex2 = grid_vertices[second_index];
-
-    if (vertex1.position.y == vertex2.position.y) {
-        return vertex{
-                vec2({vertex1.position.x + (value - vertex1.height) / (vertex2.height - vertex1.height) * (vertex2.position.x - vertex1.position.x), vertex1.position.y}), value + 0.01f, {255, 255, 255, 255}
-                // vec2({vertex1.position.x + (value - vertex1.height) / (vertex2.height - vertex1.height) * (vertex2.position.x - vertex1.position.x), vertex1.position.y}), 0.01f, {255, 255, 255, 255}
+glm::vec2 interpolate_coords(glm::vec2 coord1, glm::vec2 coord2, float value1, float value2, float value) {
+    if (coord1.y == coord2.y) {
+        return {
+            coord1.x + (value - value1) / (value2 - value1) * (coord2.x - coord1.x),
+            coord1.y
         };
     } else {
-        return vertex{
-                vec2({vertex1.position.x, vertex1.position.y + (value - vertex1.height) / (vertex2.height - vertex1.height) * (vertex2.position.y - vertex1.position.y)}), value + 0.01f, {255, 255, 255, 255}
-                // vec2({vertex1.position.x, vertex1.position.y + (value - vertex1.height) / (vertex2.height - vertex1.height) * (vertex2.position.y - vertex1.position.y)}), 0.01f, {255, 255, 255, 255}
+        return {
+            coord1.x,
+            coord1.y + (value - value1) / (value2 - value1) * (coord2.y - coord1.y)
         };
     }
 }
 
-void add_isoline(float isoline_height) {
-    std::map<std::pair<int, int>, int> indices_after_interpolation;
-    for (int i = 0; i < grid_size - 1; i++) {
-        for (int j = 0; j < grid_size - 1; j++) {
+struct isolines {
+    int count;
+    std::vector<glm::vec2> positions;
+    std::vector<int> indices;
 
-            int grid_cell_ids[4] = {
-                    i * grid_size + j,
-                    i * grid_size + j + 1,
-                    (i + 1) * grid_size + j + 1,
-                    (i + 1) * grid_size + j
+    isolines(int count): count(count) {};
+};
+
+void add_isoline(
+    isolines& isolines,
+    grid& grid,
+    function_values& function_values,
+    float isoline_value
+) {
+    std::map<std::pair<int, int>, int> indices_after_interpolation;
+    for (int i = 0; i < grid.height; i++) {
+        for (int j = 0; j < grid.width; j++) {
+            int ind = i * (grid.width + 1) + j;
+
+            int grid_inds[4] = {
+                ind,
+                ind + 1,
+                ind + grid.width + 1,
+                ind + grid.width + 2
             };
 
-            float grid_cells_height[4] = {
-                    grid_vertices[grid_cell_ids[0]].height - isoline_height,
-                    grid_vertices[grid_cell_ids[1]].height - isoline_height,
-                    grid_vertices[grid_cell_ids[2]].height - isoline_height,
-                    grid_vertices[grid_cell_ids[3]].height - isoline_height
+            float grid_cells_values[4] = {
+                    function_values.values[grid_inds[0]] - isoline_value,
+                    function_values.values[grid_inds[1]] - isoline_value,
+                    function_values.values[grid_inds[2]] - isoline_value,
+                    function_values.values[grid_inds[3]] - isoline_value
             };
 
             std::vector<std::pair<int, int>> needs_interpolation;
-            float mean = (grid_cells_height[0] + grid_cells_height[1] + grid_cells_height[2] + grid_cells_height[3]) / 4;
-            int positive = 0;
+            float mean =
+                    (grid_cells_values[0] + grid_cells_values[1] + grid_cells_values[2] + grid_cells_values[3]) / 4;
 
-            for (int k = 0; k < 4; k++) {
-                positive += grid_cells_height[k] > 0;
-            }
+            int positive = 0;
+            for (float val : grid_cells_values)
+                positive += val > 0;
 
             switch (positive) {
                 case 1:
                 case 3:
                     for (int k = 0; k < 4; k++) {
-                        if ((grid_cells_height[k] * grid_cells_height[(k + 3) % 4] < 0) && (grid_cells_height[k] * grid_cells_height[(k + 1) % 4] < 0)) {
-                            needs_interpolation.push_back(std::pair(k, (k + 3) % 4));
-                            needs_interpolation.push_back(std::pair(k, (k + 1) % 4));
+                        if ((grid_cells_values[k] * grid_cells_values[(k + 3) % 4] < 0) &&
+                            (grid_cells_values[k] * grid_cells_values[(k + 1) % 4] < 0)) {
+                            needs_interpolation.emplace_back(k, (k + 3) % 4);
+                            needs_interpolation.emplace_back(k, (k + 1) % 4);
                         }
                     }
                     break;
 
                 case 2:
-                    if (grid_cells_height[0] * grid_cells_height[1] > 0) {
-                        needs_interpolation.push_back(std::pair(0, 3));
-                        needs_interpolation.push_back(std::pair(1, 2));
-                    } else if (grid_cells_height[0] * grid_cells_height[3] > 0) {
-                        needs_interpolation.push_back(std::pair(0, 1));
-                        needs_interpolation.push_back(std::pair(2, 3));
-                    } else if (grid_cells_height[0] * mean > 0) {
-                        needs_interpolation.push_back(std::pair(0, 1));
-                        needs_interpolation.push_back(std::pair(1, 2));
-                        needs_interpolation.push_back(std::pair(0, 3));
-                        needs_interpolation.push_back(std::pair(2, 3));
+                    if (grid_cells_values[0] * grid_cells_values[1] > 0) {
+                        needs_interpolation.emplace_back(0, 3);
+                        needs_interpolation.emplace_back(1, 2);
+                    } else if (grid_cells_values[0] * grid_cells_values[3] > 0) {
+                        needs_interpolation.emplace_back(0, 1);
+                        needs_interpolation.emplace_back(2, 3);
+                    } else if (grid_cells_values[0] * mean > 0) {
+                        needs_interpolation.emplace_back(0, 1);
+                        needs_interpolation.emplace_back(1, 2);
+                        needs_interpolation.emplace_back(0, 3);
+                        needs_interpolation.emplace_back(2, 3);
                     } else {
-                        needs_interpolation.push_back(std::pair(0, 1));
-                        needs_interpolation.push_back(std::pair(0, 3));
-                        needs_interpolation.push_back(std::pair(1, 2));
-                        needs_interpolation.push_back(std::pair(2, 3));
+                        needs_interpolation.emplace_back(0, 1);
+                        needs_interpolation.emplace_back(0, 3);
+                        needs_interpolation.emplace_back(1, 2);
+                        needs_interpolation.emplace_back(2, 3);
                     }
                     break;
 
@@ -289,28 +313,31 @@ void add_isoline(float isoline_height) {
             }
 
             for (auto pair: needs_interpolation) {
-                std::pair<int, int> indexes = std::pair(grid_cell_ids[pair.first], grid_cell_ids[pair.second]);
+                std::pair<int, int> indexes = std::pair(grid_inds[pair.first], grid_inds[pair.second]);
                 if (indices_after_interpolation.contains(indexes)) {
-                    isoline_indices.push_back(indices_after_interpolation[indexes]);
+                    isolines.indices.push_back(indices_after_interpolation[indexes]);
                 } else {
-                    isoline_vertices.push_back(interpolate_coords(indexes.first, indexes.second, isoline_height));
-                    indices_after_interpolation[indexes] = isoline_vertices.size() - 1;
-                    isoline_indices.push_back(isoline_vertices.size() - 1);
+                    isolines.positions.push_back(interpolate_coords(
+                        grid.positions[indexes.first],
+                        grid.positions[indexes.second],
+                        function_values.values[indexes.first],
+                        function_values.values[indexes.second],
+                        isoline_value
+                    ));
+                    indices_after_interpolation[indexes] = isolines.positions.size() - 1;
+                    isolines.indices.push_back(isolines.positions.size() - 1);
                 }
             }
         }
     }
 }
 
-void update_isolines(float min_z, float max_z) {
-    isoline_vertices.clear();
-    isoline_indices.clear();
+isolines calculate_isolines(grid& gird, function_values& values, int isolines_count) {
+    isolines isolines(isolines_count);
 
-    for (int i = 1; i <= number_of_isolines; i++) {
-        add_isoline(min_z + (max_z - min_z) * float(i) / (number_of_isolines + 1));
-    }
-
-    update_isolines_buffers();
+    for (int i = 1; i <= isolines_count; i++)
+        add_isoline(isolines, gird, values, values.min_value + (values.max_value - values.min_value) * float(i) / (isolines_count + 1));
+    return isolines;
 }
 
 int main() try {
@@ -356,10 +383,10 @@ int main() try {
     auto fragment_shader = create_shader(GL_FRAGMENT_SHADER, fragment_shader_source);
     auto program = create_program(vertex_shader, fragment_shader);
 
-    const int W = 400, H = 300;
-
     metaball_function function;
-    grid grid(W, H);
+    int isolines_count = 5;
+    int W = 400, H = 300;
+    grid current_grid(W, H);
 
     GLuint grid_vao;
     glGenVertexArrays(1, &grid_vao);
@@ -368,27 +395,48 @@ int main() try {
     GLuint grid_positions_vbo;
     glGenBuffers(1, &grid_positions_vbo);
     glBindBuffer(GL_ARRAY_BUFFER, grid_positions_vbo);
-    glBufferData(GL_ARRAY_BUFFER, grid.positions.size() * sizeof(grid.positions[0]), grid.positions.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, current_grid.positions.size() * sizeof(current_grid.positions[0]), current_grid.positions.data(), GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
 
-    GLuint colors_vbo;
-    glGenBuffers(1, &colors_vbo);
-    glBindBuffer(GL_ARRAY_BUFFER, colors_vbo);
-    glBufferData(GL_ARRAY_BUFFER, grid.positions.size() * sizeof(glm::vec3), nullptr, GL_DYNAMIC_DRAW);
+    GLuint grid_colors_vbo;
+    glGenBuffers(1, &grid_colors_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, grid_colors_vbo);
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
 
-    GLuint grid_ebo;
-    glGenBuffers(1, &grid_ebo);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, grid_ebo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, grid.indices.size() * sizeof(grid.indices[0]), grid.indices.data(), GL_STATIC_DRAW);
+//    GLuint grid_ebo;
+//    glGenBuffers(1, &grid_ebo);
+//    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, grid_ebo);
+//    glBufferData(GL_ELEMENT_ARRAY_BUFFER, current_grid.indices.size() * sizeof(current_grid.indices[0]), current_grid.indices.data(), GL_STATIC_DRAW);
+
+    GLuint isolines_vao;
+    glGenVertexArrays(1, &isolines_vao);
+    glBindVertexArray(isolines_vao);
+
+    GLuint isoline_positions_vbo;
+    glGenBuffers(1, &isoline_positions_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, isoline_positions_vbo);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+
+    GLuint isoline_colors_vbo;
+    glGenBuffers(1, &isoline_colors_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, isoline_colors_vbo);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+
+    GLuint isoline_ebo;
+    glGenBuffers(1, &isoline_ebo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, isoline_ebo);
 
     GLint view_location = glGetUniformLocation(program, "view");
 
     glEnable(GL_DEPTH_TEST);
 
     auto last_frame_start = std::chrono::high_resolution_clock::now();
+
+    std::map<SDL_Keycode, bool> button_down;
 
     bool running = true;
     while (running) {
@@ -406,6 +454,12 @@ int main() try {
                             break;
                     }
                     break;
+                case SDL_KEYDOWN:
+                    button_down[event.key.keysym.sym] = true;
+                    break;
+                case SDL_KEYUP:
+                    button_down[event.key.keysym.sym] = false;
+                    break;
             }
 
         if (!running)
@@ -418,6 +472,24 @@ int main() try {
         float dt = std::chrono::duration_cast<std::chrono::duration<float>>(now - last_frame_start).count();
         last_frame_start = now;
 
+        if (button_down[SDLK_RIGHT])
+            isolines_count++;
+        else if (button_down[SDLK_LEFT])
+            isolines_count = std::max(0, isolines_count - 1);
+        else if (button_down[SDLK_UP]) {
+            W = std::min(800, W + 100);
+            H = std::min(600, H + 75);
+            current_grid = grid(W, H);
+            glBindBuffer(GL_ARRAY_BUFFER, grid_positions_vbo);
+            glBufferData(GL_ARRAY_BUFFER, current_grid.positions.size() * sizeof(current_grid.positions[0]), current_grid.positions.data(), GL_STATIC_DRAW);
+        } else if (button_down[SDLK_DOWN]) {
+            W = std::max(100, W - 100);
+            H = std::max(75, W - 75);
+            current_grid = grid(W, H);
+            glBindBuffer(GL_ARRAY_BUFFER, grid_positions_vbo);
+            glBufferData(GL_ARRAY_BUFFER, current_grid.positions.size() * sizeof(current_grid.positions[0]), current_grid.positions.data(), GL_STATIC_DRAW);
+        }
+
         float x_scale = (width > height) ? (float(height) / float(width)) : 1.f;
         float y_scale = (width <= height) ? (float(width) / float(height)) : 1.f;
         float view[16] = {
@@ -429,16 +501,47 @@ int main() try {
 
         function.apply_movement(dt);
 
+        auto function_values = calculate_function(current_grid, function);
+        auto isolines = calculate_isolines(current_grid, function_values, isolines_count);
+
         glUseProgram(program);
         glUniformMatrix4fv(view_location, 1, GL_TRUE, view);
+
+        glBindVertexArray(isolines_vao);
+        glBindBuffer(GL_ARRAY_BUFFER, isoline_positions_vbo);
+        glBufferData(
+            GL_ARRAY_BUFFER,
+            isolines.positions.size() * sizeof(isolines.positions[0]),
+            isolines.positions.data(),
+            GL_DYNAMIC_DRAW
+        );
+        auto isoline_colors = vector(isolines.positions.size(), glm::vec3 {0.0, 0.0, 0.0});
+        glBindBuffer(GL_ARRAY_BUFFER, isoline_colors_vbo);
+        glBufferData(
+            GL_ARRAY_BUFFER,
+            isoline_colors.size() * sizeof(isoline_colors[0]),
+            isoline_colors.data(),
+            GL_DYNAMIC_DRAW
+        );
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, isoline_ebo);
+        glBufferData(
+            GL_ELEMENT_ARRAY_BUFFER,
+            isolines.indices.size() * sizeof(isolines.indices[0]),
+            isolines.indices.data(),
+            GL_DYNAMIC_DRAW
+        );
+        glDrawElements(GL_LINES, isolines.indices.size(), GL_UNSIGNED_INT, nullptr);
+
         glBindVertexArray(grid_vao);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, grid_ebo);
-
-        glBindBuffer(GL_ARRAY_BUFFER, colors_vbo);
-        auto colors = calculate_colors(grid, function);
-        glBufferData(GL_ARRAY_BUFFER, grid.positions.size() * sizeof(glm::vec3), colors.data(), GL_DYNAMIC_DRAW);
-
-        glDrawElements(GL_TRIANGLES, grid.indices.size(), GL_UNSIGNED_INT, nullptr);
+        glBindBuffer(GL_ARRAY_BUFFER, grid_colors_vbo);
+        glBufferData(
+            GL_ARRAY_BUFFER,
+            function_values.colors.size() * sizeof(function_values.colors[0]),
+            function_values.colors.data(),
+            GL_DYNAMIC_DRAW
+        );
+//        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, grid_ebo);
+        glDrawElements(GL_TRIANGLES, current_grid.indices.size(), GL_UNSIGNED_INT, current_grid.indices.data());
 
         SDL_GL_SwapWindow(window);
     }
