@@ -358,9 +358,9 @@ int main() try
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
 
     const std::string project_root = PROJECT_ROOT;
-    const std::string cloud_data_path = project_root + "/disney_cloud.data";
+    const std::string cloud_data_path = project_root + "/cloud.data";
 
-    const glm::ivec3 cloud_texture_size { 126, 86, 154 };
+    const glm::ivec3 cloud_texture_size { 128, 64, 64 };
 
     std::vector<char> pixels(cloud_texture_size.x * cloud_texture_size.y * cloud_texture_size.y);
     std::ifstream input(cloud_data_path, std::ios::binary);
@@ -389,7 +389,8 @@ int main() try
         pixels.data()
     );
 
-    const glm::vec3 cloud_bbox_max = glm::vec3(cloud_texture_size) / 100.f;
+//    const glm::vec3 cloud_bbox_max = glm::vec3(cloud_texture_size) / 100.f;
+    const glm::vec3 cloud_bbox_max = glm::vec3(2.f, 1.f, 1.f);
     const glm::vec3 cloud_bbox_min = - cloud_bbox_max;
 
     auto last_frame_start = std::chrono::high_resolution_clock::now();
