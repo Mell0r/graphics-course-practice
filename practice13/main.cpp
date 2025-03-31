@@ -276,8 +276,10 @@ int main() try
     float time = 0.f;
 
     std::string current_animation_name = "hip-hop";
-    std::string previous_animation_name = "hip-hop";
     float animation_change_time = 0.f;
+    auto translations = std::vector<glm::vec3>(input_model.bones.size());
+    auto scales = std::vector<glm::vec3>(input_model.bones.size());
+    auto rotations = std::vector<glm::quat>(input_model.bones.size());
 
     std::map<SDL_Keycode, bool> button_down;
 
@@ -341,18 +343,15 @@ int main() try
         if (button_down[SDLK_s])
             view_angle += 2.f * dt;
 
-        if (button_down[SDLK_1] && current_animation_name != "hip-hop") {
-            previous_animation_name = current_animation_name;
+        if (button_down[SDLK_1]) {
             current_animation_name = "hip-hop";
             animation_change_time = time;
         }
-        if (button_down[SDLK_2] && current_animation_name != "rumba") {
-            previous_animation_name = current_animation_name;
+        if (button_down[SDLK_2]) {
             current_animation_name = "rumba";
             animation_change_time = time;
         }
-        if (button_down[SDLK_3] && current_animation_name != "flair") {
-            previous_animation_name = current_animation_name;
+        if (button_down[SDLK_3]) {
             current_animation_name = "flair";
             animation_change_time = time;
         }
@@ -375,14 +374,12 @@ int main() try
         view = glm::rotate(view, camera_rotation, {0.f, 1.f, 0.f});
         view = glm::translate(view, {0.f, -camera_height, 0.f});
 
-        auto previous_animation = input_model.animations.at(previous_animation_name);
         auto current_animation = input_model.animations.at(current_animation_name);
 
         float scale = 0.75f + cos(time) * 0.25f;
         std::vector<glm::mat4x3> bones(input_model.bones.size(), glm::mat4x3(scale));
 
-        float previous_t = std::fmod(time, previous_animation.max_time);
-        float current_t = std::fmod(time, current_animation.max_time);
+        float t = std::fmod(time, current_animation.max_time);
         float interpolation_coef = std::min(time - animation_change_time, 1.f);
         for (int i = 0; i < input_model.bones.size(); i++) {
 //            auto bone_animation = current_animation.bones[i];
@@ -390,25 +387,25 @@ int main() try
 //            auto scaling = glm::scale(glm::mat4(1.f), bone_animation.scale(current_t));
 //            auto rotation = glm::toMat4(bone_animation.rotation(current_t));
 
-            auto translation_interpolated = glm::lerp(
-                previous_animation.bones[i].translation(previous_t),
-                current_animation.bones[i].translation(current_t),
+            translations[i] = glm::lerp(
+                translations[i],
+                current_animation.bones[i].translation(t),
                 interpolation_coef
             );
-            auto scaling_interpolated = glm::lerp(
-                    previous_animation.bones[i].scale(previous_t),
-                    current_animation.bones[i].scale(current_t),
-                    interpolation_coef
+            scales[i] = glm::lerp(
+                scales[i],
+                current_animation.bones[i].scale(t),
+                interpolation_coef
             );
-            auto rotation_interpolated = glm::slerp(
-                    previous_animation.bones[i].rotation(previous_t),
-                    current_animation.bones[i].rotation(current_t),
-                    interpolation_coef
+            rotations[i] = glm::slerp(
+                rotations[i],
+                current_animation.bones[i].rotation(t),
+                interpolation_coef
             );
 
-            auto translation = glm::translate(glm::mat4(1.f), translation_interpolated);
-            auto scaling = glm::scale(glm::mat4(1.f), scaling_interpolated);
-            auto rotation = glm::toMat4(rotation_interpolated);
+            auto translation = glm::translate(glm::mat4(1.f), translations[i]);
+            auto scaling = glm::scale(glm::mat4(1.f), scales[i]);
+            auto rotation = glm::toMat4(rotations[i]);
 
             auto transform = translation * rotation * scaling;
 
